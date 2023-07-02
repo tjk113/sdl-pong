@@ -6,6 +6,7 @@
 
 #include <SDL_main.h>
 #include <SDL.h>
+#include <SDL_audio.h>
 
 #define WIDTH             640
 #define HEIGHT            480
@@ -42,6 +43,13 @@ typedef struct {
 } Score;
 Score left_score, right_score;
 
+typedef struct {
+    SDL_AudioDeviceID device;
+    SDL_AudioSpec spec;
+    uint8_t* audio_buffer;
+    uint32_t buffer_length;
+} Sound;
+Sound hit_paddle, hit_screen, win_theme;
 
 SDL_Surface* load_surface(const char* path, SDL_Surface* screen_surface) {
     SDL_Surface* surface = SDL_LoadBMP(path);
@@ -91,8 +99,50 @@ void free_surfaces() {
         SDL_FreeSurface(s_nums[i]);
 }
 
+void load_audio_device(Sound* sound) {
+    printf("using audio device \"%s\"\n", SDL_GetAudioDeviceName(1, 0));
+    sound->device = SDL_OpenAudioDevice(SDL_GetAudioDeviceName(1, 0), 0, &sound->spec, NULL, SDL_AUDIO_ALLOW_ANY_CHANGE);
+    if (sound->device == NULL)
+        printf("Couldn't load audio device for sound \"%s\"; Error: %s", SDL_GetError());
+}
+
+void load_sound(const char* path, Sound* sound) {
+    if (SDL_LoadWAV(path, &sound->spec, &sound->audio_buffer, &sound->buffer_length) == NULL)
+        printf("Couldn't load sound \"%s\"; Error: %s", path, SDL_GetError());
+}
+
+void load_sounds() {
+    load_sound(".\\assets\\hit_paddle.wav", &hit_paddle);
+    load_sound(".\\assets\\hit_screen.wav", &hit_screen);
+    load_sound(".\\assets\\win_theme.wav", &win_theme);
+    load_audio_device(&hit_paddle);
+    load_audio_device(&hit_screen);
+    load_audio_device(&win_theme);
+}
+
+void free_sounds() {
+    SDL_FreeWAV(hit_paddle.audio_buffer);
+    SDL_FreeWAV(hit_screen.audio_buffer);
+    SDL_FreeWAV(win_theme.audio_buffer);
+    SDL_CloseAudioDevice(hit_paddle.device);
+    SDL_CloseAudioDevice(hit_screen.device);
+    SDL_CloseAudioDevice(win_theme.device);
+}
+
+void play_sound(Sound* sound) {
+    if (SDL_QueueAudio(sound->device, sound->audio_buffer, sound->buffer_length) > 0)
+        printf("Couldn't queue sound \"%s\"; Error: %s", SDL_GetError());
+    SDL_PauseAudioDevice(sound->device, 0);
+    printf("played sound\n");
+}
+
+void stop_sound(Sound* sound) {
+    SDL_PauseAudioDevice(sound->device, 1);
+}
+
 void reflect_ball_from_screen() {
     ball.y_velocity = -ball.y_velocity;
+    play_sound(&hit_screen);
 }
 
 void reflect_ball_from_paddle(uint8_t* keyboard_state) {
@@ -102,6 +152,7 @@ void reflect_ball_from_paddle(uint8_t* keyboard_state) {
         ball.y_velocity = ball.y_velocity ? -ball.y_velocity : BALL_Y_VELOCITY;
     else if (keyboard_state[SDL_SCANCODE_S] || keyboard_state[SDL_SCANCODE_DOWN])
         ball.y_velocity = ball.y_velocity ? -ball.y_velocity : BALL_Y_VELOCITY;
+    play_sound(&hit_paddle);
 }
 
 void resolve_ball_collisions(bool* ball_is_reset, uint8_t* keyboard_state) {
@@ -132,6 +183,7 @@ void resolve_ball_off_screen(bool* ball_is_reset) {
 void set_off_ball(int direction) {
     ball.speed = 1;
     ball.x_velocity = direction == 0 ? -BALL_X_VELOCITY : BALL_X_VELOCITY;
+    play_sound(&hit_screen);
 }
 
 // Center ball and reset its velocity
@@ -223,11 +275,10 @@ void draw_crown(int player, SDL_Surface* screen_surface) {
 }
 
 // Initialize SDL subsystems
-SDL_Window* init_window() {
-    // Video subsystem
+SDL_Window* init_sdl() {
     SDL_Window* win = NULL;
 
-    if (SDL_Init(SDL_INIT_VIDEO) < 0) {
+    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO) < 0) {
         printf("Error! %s\n", SDL_GetError());
         return NULL;
     }
@@ -240,14 +291,14 @@ SDL_Window* init_window() {
 }
 
 int main(int argc, char* argv[]) {
-    SDL_Window* win = init_window();
-    if (!win) {
-        printf("Unable to initialize SDL_Window! Error: %s\n", SDL_GetError());
+    SDL_Window* win = init_sdl();
+    if (!win)
         return 1;
-    }
 
     SDL_Surface* screen_surface = SDL_GetWindowSurface(win);
     load_surfaces(screen_surface);
+
+    load_sounds();
 
     left_paddle.rect = (SDL_FRect){.w = 4.0f, .h = 70.0f, .x = 5.0f, .y = HEIGHT / 2.0f};
     right_paddle.rect = (SDL_FRect){.w = 4.0f, .h = 70.0f, .x = WIDTH - 5.0f, .y = HEIGHT / 2.0f};
@@ -258,6 +309,7 @@ int main(int argc, char* argv[]) {
     // Main loop
     bool exit = false;
     bool game_ended = false;
+    int only_play_win_theme_once_counter = 0;
     SDL_Event event;
     uint8_t* keyboard_state;
 
@@ -282,6 +334,7 @@ int main(int argc, char* argv[]) {
             reset_score();
             reset_paddles();
             reset_ball(&ball_is_reset);
+            only_play_win_theme_once_counter = 0;
         }
         if (!game_ended) {
             // Calculate physics, resolve collisions, update score, etc.
@@ -302,8 +355,11 @@ int main(int argc, char* argv[]) {
             last_update = update;
         }
         // Render
-        if (left_score.score > 9 || right_score.score > 9)
+        if (left_score.score > 9 || right_score.score > 9) {
             game_ended = true;
+            if (only_play_win_theme_once_counter++ == 1)
+                play_sound(&win_theme);
+        }
         draw_background(screen_surface);
         if (!game_ended) {
             draw_paddles(screen_surface);
@@ -317,5 +373,6 @@ int main(int argc, char* argv[]) {
         SDL_UpdateWindowSurface(win);
     }
     free_surfaces();
+    free_sounds();
     return 0;
 }
